@@ -1,0 +1,69 @@
+#Build react app and deploy it to a remote instance
+default:
+  image: node:lts
+  tags:
+   - QBC-internal
+
+stages:
+  - Build
+  - Deploy
+
+variables:
+  DEV_BRANCH: "develop"
+  QA_BRANCH: "qa"
+  UAT_BRANCH: "uat"
+  
+build_frontend:
+  stage: Build
+  before_script:
+    - apt-get update && apt-get install zip
+  script:
+    - echo "Building from $CI_COMMIT_BRANCH branch...";
+    - cp $ENV_DEV .env #ENV_DEV is saved as variable file in Gitlab
+    - npm install && npm run build;
+    - zip -r artifact.zip dist;
+  artifacts:
+    when: on_success
+    paths:
+      - "./artifact.zip"
+    expire_in: 1 hour
+  only:
+    - develop
+    - qa
+    - uat
+
+deploy_dev:
+  stage: Deploy
+  dependencies:
+    - build_frontend
+  script:
+    - echo "Deploying to $CI_COMMIT_BRANCH"
+    - chmod 400 $SSH_KEY #$SS_KEY is saved as variable file in Gitlab
+    - scp -o StrictHostKeyChecking=no -i $SSH_KEY artifact.zip subadmin@44.214.124.101:~/;
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY subadmin@44.214.124.101 "unzip -o artifact.zip -d ~/multifamily/dev/frontend/;"
+  only:
+    - develop
+
+deploy_qa:
+  stage: Deploy
+  dependencies:
+    - build_frontend
+  script:
+    - echo "Deploying to $CI_COMMIT_BRANCH"
+    - chmod 400 $SSH_KEY
+    - scp -o StrictHostKeyChecking=no -i $SSH_KEY artifact.zip subadmin@44.214.124.101:~/;
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY subadmin@44.214.124.101 "unzip -o artifact.zip -d ~/multifamily/qa/frontend/;"
+  only:
+    - qa
+
+deploy_uat:
+  stage: Deploy
+  dependencies:
+    - build_frontend
+  script:
+    - echo "Deploying to $CI_COMMIT_BRANCH"
+    - chmod 400 $SSH_KEY
+    - scp -o StrictHostKeyChecking=no -i $SSH_KEY artifact.zip subadmin@44.214.124.101:~/;
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY subadmin@44.214.124.101 "unzip -o artifact.zip -d ~/multifamily/uat/frontend/;"
+  only:
+    - uat
