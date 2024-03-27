@@ -1,0 +1,55 @@
+default:
+  image: alpine:latest
+  tags:
+   - QBC-internal
+
+stages:
+  - Build
+  - Deploy
+
+variables:
+  DEV_BRANCH: "develop-ops"
+  QA_BRANCH: "qa"
+  UAT_BRANCH: "uat"
+  
+build_backend:
+  stage: Build
+  before_script:
+    - apk update
+    - apk add zip
+  script:
+    - echo "Building from $CI_COMMIT_BRANCH branch...";
+    - mkdir app/config/envs
+    - cp $ENV_DEV .env
+    - zip -r multifamily-backend.zip ./;
+  artifacts:
+    when: on_success
+    paths:
+      - "./multifamily-backend.zip"
+    expire_in: 1 hour
+  only:
+    - develop-ops
+
+deploy:
+  stage: Deploy
+  before_script:
+    - apk update
+    - apk add openssh-client
+    - ls -la
+  script:
+    - echo "Deploying to $CI_COMMIT_BRANCH"
+    - chmod 400 $SSH_KEY
+    - scp -o StrictHostKeyChecking=no -i $SSH_KEY multifamily-backend.zip subadmin@44.214.124.101:~/artifacts/backend/;
+    - scp -o StrictHostKeyChecking=no -i $SSH_KEY operations/deploy.sh subadmin@44.214.124.101:~/artifacts/backend/;
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY subadmin@44.214.124.101 "~/artifacts/backend/deploy.sh --environment $CI_COMMIT_BRANCH"
+
+      # cd ~/multifamily/dev/backend/multifamily-backend && 
+      # pm2 delete dev-server && rm -rf * && 
+      # unzip -o ~/artifacts/backend/multifamily-backend.zip -d ./ && npm install && mv .env app/config/envs && 
+      # pm2 start server.js --name dev-server --namespace dev"    
+  only:
+    - develop-ops
+    - qa
+    - uat
+
+  #test
