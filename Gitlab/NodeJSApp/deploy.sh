@@ -1,3 +1,4 @@
+# deploy backend code by zipping the repo from gitlab and extracting the repo to application server 
 #!/bin/bash
 
 dev_env="dev"
