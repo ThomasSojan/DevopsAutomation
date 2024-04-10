@@ -51,10 +51,9 @@ fi
 
 echo "Selected environment: $env"
 echo "Deploying to $env environment"
-cd ~/multifamily/$env/backend/multifamily-backend
-pm2 delete "${env}-server"
-rm -rf
-unzip -o ~/artifacts/backend/multifamily-backend.zip -d ./
-npm install
-mv .env app/config/envs
-pm2 start server.js --name "${env}-server" --namespace $env
+pm2 stop "${env}-server" && pm2 delete "${env}-server"
+rm -rf ~/multifamily/$env/backend/multifamily_backend/*
+unzip -o ~/artifacts/backend/multifamily-backend.zip -d ~/multifamily/$env/backend/multifamily_backend
+cd ~/multifamily/$env/backend/multifamily_backend && git checkout $ENVIRONMENT && npm install && mv .env app/config/envs && pm2 start server.js --name "${env}-server" --namespace "${env}-ns"
+pm2 save
+
