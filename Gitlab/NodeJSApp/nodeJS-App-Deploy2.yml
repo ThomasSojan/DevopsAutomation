@@ -1,0 +1,23 @@
+default:
+  image: alpine:latest
+  tags:
+   - QBC-internal
+
+stages:
+  - Build
+  - Deploy
+
+
+Deploy:
+  stage: Deploy
+  before_script:
+    - apk update
+    - apk add openssh-client
+  script:
+    - echo "Deploying to $CI_COMMIT_BRANCH"
+    - chmod 400 $SSH_KEY
+    - scp -o StrictHostKeyChecking=no -i $SSH_KEY operations/deploy.sh subadmin@44.214.124.101:~/multifamily/ops/;
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY subadmin@44.214.124.101 "~/multifamily/ops/deploy.sh --environment $CI_COMMIT_BRANCH"   
+  only:
+    - develop
+    - uat
