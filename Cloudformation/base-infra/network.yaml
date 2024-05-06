@@ -1,0 +1,390 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: This template creates a default VPC, Internet-gateway, NAT instance, elastic ip, public subnets, private subnets, route tables, security group.  
+Parameters:
+  VPCName:
+    Type: String
+    Description: Please enter VPC name "vpc-[projectapplication]-[component or function]"
+    Default: vpc-safran-internal-shared
+
+  VpcCIDR:
+    Description: Please enter the IP range (CIDR notation) for this VPC
+    Type: String
+    Default: 10.0.0.0/16
+
+  PublicSubnet1Name:
+    Description: Please enter the public subnet name
+    Type: String
+    Default: sub-pub-safran-internal-shared-az1-001
+
+  PublicSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet
+    Type: String
+    Default: 10.0.0.0/24
+
+  PublicSubnet2Name:
+    Description: Please enter the public subnet name
+    Type: String
+    Default: sub-pub-safran-internal-shared-az2-002
+
+  PublicSubnet2CIDR:
+    Description: Please enter the IP range (CIDR notation) for the public subnet
+    Type: String
+    Default: 10.0.1.0/24
+
+  PrivateSubnet1Name:
+    Description: Please enter the private subnet name
+    Type: String
+    Default: sub-prv-safran-internal-shared-az1-001
+
+  PrivateSubnet1CIDR:
+    Description: Please enter the IP range (CIDR notation) for the private subnet
+    Type: String
+    Default: 10.0.2.0/24
+  
+  PrivateSubnet2Name:
+    Description: Please enter the private subnet name
+    Type: String
+    Default: sub-prv-safran-internal-shared-az2-002
+
+  PrivateSubnet2CIDR:
+    Description: Please enter the IP range (CIDR notation) for the private subnet
+    Type: String
+    Default: 10.0.3.0/24
+
+  PublicRouteTableName1:  
+    Description: Please enter 1st public route table name 
+    Type: String
+    Default: rtb-pub-safran-internal-shared-001
+
+  PublicRouteTableName2:  
+    Description: Please enter 2nd public route table name 
+    Type: String
+    Default: rtb-pub-safran-internal-shared-002
+
+  PrivateRouteTableName1:  
+    Description: Please enter 1st private route table name
+    Type: String
+    Default: rtb-prv-safran-internal-shared-001
+
+  PrivateRouteTableName2:  
+    Description: Please enter 2nd private route table name
+    Type: String
+    Default: rtb-prv-safran-internal-shared-002
+
+  NatInstanceName:
+    Type: String
+    Description: Please enter NAT Instance name"
+    Default: safran-internal-shared-nat-instance
+
+  NATInstanceAMI:
+    Description: AMI ID for NAT instance (amzn-ami-vpc-nat).
+    Type: 'AWS::EC2::Image::Id'
+
+
+  ComplianceTagValue:
+    Type: String
+    Description: Tag to identify safran compliance framework.
+    AllowedValues: [NONE,HIPA,GDPR,PCI-DSS]
+    Default: NONE
+  
+
+Resources:
+  #Create VPC
+  VPC:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref VPCName
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common
+  
+  #Create InternetGateeway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: safran-internal-igw
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common 
+      
+  #Atttach InternetGateeway to VPC  
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  
+  #Create Public Subnets
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet1CIDR
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs
+          Ref: 'AWS::Region'
+      Tags:
+        - Key: Name
+          Value: !Ref PublicSubnet1Name
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common 
+                  
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet2CIDR
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs
+          Ref: 'AWS::Region'
+      Tags:
+        - Key: Name
+          Value: !Ref PublicSubnet2Name
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common 
+
+  #Create Private Subnets
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs
+          Ref: 'AWS::Region'
+      Tags:
+        - Key: Name
+          Value: !Ref PrivateSubnet1Name
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common 
+                  
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs
+          Ref: 'AWS::Region'
+      Tags:
+        - Key: Name
+          Value: !Ref PrivateSubnet2Name
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common 
+    
+  #Create NAT SG
+  NatSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for NAT instance
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 10.0.2.0/24
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 10.0.3.0/24
+      Tags:
+        - Key: Name
+          Value: NATSecurityGroup
+    
+  #Create NAT Instance
+  NatInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      SecurityGroupIds:
+        - !Ref NatSecurityGroup
+      KeyName: safran-internal-devops-keypair
+      ImageId: !Ref NATInstanceAMI # Specify an AMI that supports NAT instance
+      SubnetId: !Ref PublicSubnet1
+      SourceDestCheck: false  # Disable source/destination check
+      Tags:
+        - Key: Name
+          Value: !Ref NatInstanceName
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common
+
+  #Create NAT Instance EIP
+  NatInstanceEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    DeletionPolicy: Retain
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: safran-internal-nat-eip
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common
+
+  #Attach EIP to NAT Instance
+  NatEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref NatInstance
+      EIP: !Ref NatInstanceEIP
+
+  #Create Route Table for Public Subnets
+  PublicRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Ref PublicRouteTableName1
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common 
+
+  PublicRouteTable1Entry:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicRouteTable1SubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable1
+
+  PublicRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Ref PublicRouteTableName2
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common  
+
+  PublicRouteTable2Entry:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicRouteTable2SubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable2
+
+  #Create Private Route Table
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Ref PrivateRouteTableName1
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common
+  
+  PrivateRouteTable1Entry:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      InstanceId: !Ref NatInstance
+
+  PrivateRouteTable1SubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable1
+
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Ref PrivateRouteTableName2
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common
+  
+  PrivateRouteTable2Entry:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      InstanceId: !Ref NatInstance
+
+  PrivateRouteTable2SubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable2
+      
