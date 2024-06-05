@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: This template creates a default VPC, Internet-gateway, NAT instance, elastic ip, public subnets, private subnets, route tables, security group.  
+Description: This template creates a default VPC, Internet-gateway, NAT instance, elastic ip, public subnets, private subnets, route tables, security group, customer managed key for encryption etc.  
 Parameters:
   VPCName:
     Type: String
@@ -51,6 +51,11 @@ Parameters:
     Type: String
     Default: 10.0.3.0/24
 
+  PrivateHostedZoneDomain:
+    Description: Please enter private hosted zone name
+    Type: String
+    Default: safran.internal
+
   PublicRouteTableName1:  
     Description: Please enter 1st public route table name 
     Type: String
@@ -76,10 +81,29 @@ Parameters:
     Description: Please enter NAT Instance name"
     Default: safran-internal-shared-nat-instance
 
+  NatInstanceKeyPairName:
+    Type: String
+    Description: Please enter NAT key pair name"
+    Default: safran-internal-devops-keypair
+
   NATInstanceAMI:
     Description: AMI ID for NAT instance (amzn-ami-vpc-nat).
     Type: 'AWS::EC2::Image::Id'
 
+  NATSSMRoleName:
+    Type: String
+    Description: Please enter NAT SSM role name"
+    Default: rol-safran-internal-shared-nat-instance
+
+  EncryptionKeyAliasName:
+    Type: String
+    Description: Please enter Alias Name for the Customer Managed key.
+    Default: "safran-internal-shared-cmk"
+
+  QburstPrefixListName:
+    Type: String
+    Description: Please enter Prefixlist name"
+    Default: pfx-safran-internal-shared-qburst
 
   ComplianceTagValue:
     Type: String
@@ -87,7 +111,6 @@ Parameters:
     AllowedValues: [NONE,HIPA,GDPR,PCI-DSS]
     Default: NONE
   
-
 Resources:
   #Create VPC
   VPC:
@@ -208,7 +231,23 @@ Resources:
           Value: DEVOPS
         - Key: cost-allocation:application
           Value: common 
-    
+
+  #Create Private Hosted Zone
+  PrivateHostedZone:
+    Type: 'AWS::Route53::HostedZone'
+    Properties:
+      Name: !Sub '${AWS::Region}.${PrivateHostedZoneDomain}'
+      VPCs:
+        - VPCId: !Ref VPC
+          VPCRegion: !Ref 'AWS::Region'
+      HostedZoneTags:
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common
+
   #Create NAT SG
   NatSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -217,13 +256,26 @@ Resources:
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: 0
-          ToPort: 65535
-          CidrIp: 10.0.2.0/24
+          FromPort: 80
+          ToPort: 80
+          SourcePrefixListId: !Ref QBurstPrefixList
+          Description: QBrust IP address on port 8080
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourcePrefixListId: !Ref QBurstPrefixList
+          Description: QBrust IP address on port 8080
         - IpProtocol: tcp
           FromPort: 0
           ToPort: 65535
-          CidrIp: 10.0.3.0/24
+          CidrIp: !Ref PrivateSubnet1CIDR
+          Description: Private Subnet 1 instances
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: !Ref PrivateSubnet2CIDR
+          Description: Private Subnet 2 instances
+
       Tags:
         - Key: Name
           Value: NATSecurityGroup
@@ -233,9 +285,10 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t2.micro
+      IamInstanceProfile: !Ref NATInstanceProfile
       SecurityGroupIds:
         - !Ref NatSecurityGroup
-      KeyName: safran-internal-devops-keypair
+      KeyName: !Ref NatInstanceKeyPairName
       ImageId: !Ref NATInstanceAMI # Specify an AMI that supports NAT instance
       SubnetId: !Ref PublicSubnet1
       SourceDestCheck: false  # Disable source/destination check
@@ -272,6 +325,29 @@ Resources:
     Properties:
       InstanceId: !Ref NatInstance
       EIP: !Ref NatInstanceEIP
+
+  #Create NAT SSM Role
+  NATSSMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Ref NATSSMRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'ec2.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+
+  #Create instance profile for the NATSSMRole
+  NATInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Roles:
+        - !Ref NATSSMRole
+      InstanceProfileName: !Ref NATSSMRoleName
 
   #Create Route Table for Public Subnets
   PublicRouteTable1:
@@ -387,4 +463,113 @@ Resources:
     Properties:
       SubnetId: !Ref PrivateSubnet2
       RouteTableId: !Ref PrivateRouteTable2
-      
+
+  #Create Customer Managed Key
+  EncryptionKey:
+    Type: AWS::KMS::Key
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      Description: "Customer Managed Key in AWS KMS service to encrypt EBS volumes"
+      Enabled: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: "pol-cmk-ebs-encryption"
+        Statement:
+          - Sid: "Enable IAM User Permissions"
+            Effect: "Allow"
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action:
+              - "kms:*"
+            Resource: "*"
+          - Sid: "Allow use of the key"
+            Effect: "Allow"
+            Principal:
+              AWS: 
+                - !Sub "arn:aws:iam::${AWS::AccountId}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+            Action:
+              - "kms:Encrypt"
+              - "kms:Decrypt"
+              - "kms:ReEncrypt*"
+              - "kms:GenerateDataKey*"
+              - "kms:DescribeKey"
+            Resource: "*"
+          - Sid: "Allow attachment of persistent resources for service role"
+            Effect: "Allow"
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+            Action:
+              - "kms:CreateGrant"
+              - "kms:ListGrants"
+              - "kms:RevokeGrant"
+            Resource: "*"
+            Condition:
+              Bool:
+                kms:GrantIsForAWSResource: true
+      Tags:
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common
+
+  EncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 
+        - "alias/${AliasName}"
+        - AliasName: !Ref EncryptionKeyAliasName
+      TargetKeyId: !Ref EncryptionKey     
+
+
+  #Create Prefixlist for IP whitelisting
+  QBurstPrefixList:
+      Type: AWS::EC2::PrefixList
+      Properties:
+        PrefixListName: !Ref QburstPrefixListName
+        AddressFamily: "IPv4"
+        MaxEntries: 20
+        Entries:
+          - Cidr: "117.239.250.9/32"
+            Description: "QBurst Calicut IP 1"
+          - Cidr: "111.93.116.30/32"
+            Description: "QBurst Calicut IP 2"
+          - Cidr: "118.185.82.83/32"
+            Description: "QBurst Kochi Lulu IP 1"
+          - Cidr: "115.248.7.141/32"
+            Description: "QBurst Kochi Lulu IP 2"
+          - Cidr: "61.12.76.170/32"
+            Description: "QBurst Kochi Lulu IP 3"
+          - Cidr: "14.141.33.202/32"
+            Description: "QBurst Kochi Lulu IP 4"
+          - Cidr: "103.156.209.138/32"
+            Description: "QBurst Kochi Lulu IP 5"
+          - Cidr: "14.194.85.198/32"
+            Description: "QBurst TVM Safran ODC IP 1"
+          - Cidr: "103.121.27.174/32"
+            Description: "QBurst TVM Safran ODC IP 2"
+          - Cidr: "49.249.37.182/32"
+            Description: "QBurst Kochi WTC IP 1"
+          - Cidr: "103.135.95.70/32"
+            Description: "QBurst Kochi WTC IP 2"
+          - Cidr: "122.15.225.249/32"
+            Description: "QBurst Banglore IP 1"
+          - Cidr: "14.98.205.138/32"
+            Description: "QBurst Banglore IP 2"
+          - Cidr: "112.133.206.230/32"
+            Description: "QBurst Banglore IP 3"
+          - Cidr: "10.212.134.5/32"
+            Description: "QBurst Banglore IP 4"
+          - Cidr: "10.212.134.10/32"
+            Description: "QBurst Banglore IP 5"
+        Tags:
+        - Key: "Name"
+          Value: !Ref QburstPrefixListName
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common
