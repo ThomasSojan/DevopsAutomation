@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: This template creates a Jenkins master instance.  
+Description: This template creates a Jenkins master-slave instances and its associated resources.  
 Parameters:
   InstanceName:
     Type: String
