@@ -1,0 +1,413 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: This template creates a Jenkins master instance.  
+Parameters:
+  InstanceName:
+    Type: String
+    Description: Please enter Instance name
+    Default: safran-internal-shared-jenkins-master
+
+  VpcName:
+    Description: VPC to launch the EC2 instance into
+    Type: AWS::EC2::VPC::Id
+    ConstraintDescription: Must be a valid VPC ID.
+
+  # PrivateSubnet1:
+  #   Description: Private Subnet to launch the EC2 instance into
+  #   Type: AWS::EC2::Subnet::Id
+  #   ConstraintDescription: Must be a valid subnet ID.
+
+  # PrivateSubnet2:
+  #   Description: Private Subnet to launch the EC2 instance into
+  #   Type: AWS::EC2::Subnet::Id
+  #   ConstraintDescription: Must be a valid subnet ID.
+
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Select private subnet Ids for EC2 Instance
+
+  HostedZoneId:
+    Type: String
+    Description: Please enter hosted zone id
+    Default: Z003873136AR2BZROMRXF
+
+  DnsRecordName:
+    Type: String
+    Description: Please enter DNS record
+    Default: jenkins.us-east-1.safran.internal	
+
+  EfsName:
+    Type: String
+    Description: Please enter EFS name
+    Default: safran-internal-shared-efs
+
+  KmsKeyId:
+    Type: String
+    Description: Please enter KMS CMK key Id
+    Default: bdc8e07b-a5ff-4cec-85b5-ab0db2519f2d	
+
+  EC2AMIJenkinsMaster:
+    Type: String
+    Description: Please enter AMI id 
+    Default: ami-043509cdc08ed3853
+
+  EC2AMIJenkinsSlave:
+    Type: String
+    Description: Please enter AMI id 
+    Default: ami-082fd42ec9fa3a774
+  
+
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t2.small
+      - t2.medium
+
+  IAMRoleName:
+    Type: String
+    Description: Please enter IAM role name
+    Default: rol-safran-internal-shared-instance
+
+  KeyName:
+    Type: String
+    Description: Please enter key pair name
+    Default: safran-internal-devops-keypair
+
+  ComplianceTagValue:
+    Type: String
+    Description: Tag to identify safran compliance framework.
+    AllowedValues: [NONE,HIPA,GDPR,PCI-DSS]
+    Default: NONE
+  
+Resources:
+  #Create Instance SG
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Jenkins Master instance
+      VpcId: !Ref VpcName
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '8080'
+          ToPort: '8080'
+          CidrIp: 0.0.0.0/0 
+
+  #Create EFS SG
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EFS filesystem
+      VpcId: !Ref VpcName
+      SecurityGroupIngress: 
+        - IpProtocol: tcp
+          FromPort: '2049'
+          ToPort: '2049'
+          CidrIp: 0.0.0.0/0 # This allows NFS traffic for EFS
+
+  #Create IAM Role
+  EC2IAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Ref IAMRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'ec2.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Tags:
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common
+
+  
+  #IAM policy for Fleet plugin
+  EC2IamPolicyFleetJenkins:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: pol-shared-cicd-jenkins-ec2-fleet
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - ec2:DescribeSpotFleetInstances
+          - ec2:ModifySpotFleetRequest
+          - ec2:CreateTags
+          - ec2:DescribeRegions
+          - ec2:DescribeInstances
+          - ec2:TerminateInstances
+          - ec2:StartInstances
+          - ec2:StopInstances
+          - ec2:DescribeInstanceStatus
+          - ec2:DescribeSpotFleetRequests
+          - ec2:RunInstances
+          - ec2:DescribeFleets
+          - ec2:DescribeFleetInstances
+          - ec2:ModifyFleet
+          - ec2:DescribeInstanceTypes
+          Resource: "*"
+        - Effect: Allow
+          Action:
+          - autoscaling:DescribeAutoScalingGroups
+          - autoscaling:UpdateAutoScalingGroup
+          Resource: "*"
+        - Effect: Allow
+          Action:
+          - iam:ListInstanceProfiles
+          - iam:ListRoles
+          - iam:PassRole
+          Resource: "*"
+      Roles:
+      - !Ref EC2IAMRole
+
+  #IAM policy for Assuming role for deployment
+  EC2IamPolicyDeploymentJenkins:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: pol-shared-cicd-jenkins-deployment
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - sts:AssumeRole
+          Resource: "*"
+      Roles:
+      - !Ref EC2IAMRole
+
+  #Create instance profile for the IAMRole
+  Ec2IamInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Roles:
+        - !Ref EC2IAMRole
+      InstanceProfileName: !Ref IAMRoleName
+
+  # Create EFS File System
+  EFSFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      PerformanceMode: generalPurpose
+      Encrypted: true
+      KmsKeyId: !Ref KmsKeyId
+      FileSystemTags:
+        - Key: Name
+          Value: !Ref EfsName
+      
+        
+
+  # Create Mount Target for EFS in the specified subnet
+  EFSMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Select
+        - 0
+        - !Ref PrivateSubnetIds
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  EFSMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Select
+        - 1
+        - !Ref PrivateSubnetIds
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  #Create Jenkins Master Instance
+  MasterInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: EFSMountTarget1
+    Properties:
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref Ec2IamInstanceProfile
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      KeyName: !Ref KeyName
+      ImageId: !Ref EC2AMIJenkinsMaster
+      SubnetId: !Select
+        - 0
+        - !Ref PrivateSubnetIds
+      UserData:
+        Fn::Base64: !Sub |
+              #!/bin/bash
+
+              sudo systemctl stop jenkins
+              sudo mkdir -p /mnt/efs
+              sudo mount -t nfs -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 '${EFSFileSystem}.efs.${AWS::Region}.amazonaws.com:/' /mnt/efs
+              sudo mkdir -p /mnt/efs/jenkins-home
+              if [ -e /mnt/efs/jenkins-home/config.xml ]; then
+                echo "Jenkins config file exists, not an empty drive"
+              else
+                sudo chown jenkins:jenkins /mnt/efs/jenkins-home -R && sudo chmod 755 /mnt/efs/jenkins-home -R
+              fi
+              echo '${EFSFileSystem}.efs.${AWS::Region}.amazonaws.com:/jenkins-home /var/lib/jenkins nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0' >> /etc/fstab
+              mount -av
+              systemctl daemon-reload
+              systemctl start jenkins
+              sudo umount /mnt/efs
+      Tags:
+        - Key: Name
+          Value: !Ref InstanceName
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common
+  
+  # Create Route 53 A Record
+  MasterInstanceDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties: 
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DnsRecordName
+      Type: A
+      TTL: '300'
+      ResourceRecords: 
+        - !GetAtt MasterInstance.PrivateIp
+
+  # security group for jenkins slave ec2
+  Ec2SlaveSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: 'sgp-safran-internal-shared-cicd-slave-ec2'
+      GroupDescription: EC2 Allowed Ports
+      VpcId: !Ref VpcName
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref InstanceSecurityGroup
+          Description: jenkins port 
+      Tags :
+        - Key: Name
+          Value: 'sgp-safran-internal-shared-cicd-slave-ec2'
+        - Key: compliance:framework
+          Value: NONE
+        - Key: cost-allocation:department
+          Value: DEVOPS
+        - Key: cost-allocation:application
+          Value: common 
+
+  #Launch template for jenkins slaves ( spot )     
+  EC2JenkinsSlaveSpotLaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: ltp-shared-cicd-slave-spot
+      LaunchTemplateData:
+        ImageId: !Ref EC2AMIJenkinsSlave
+        InstanceType: t2.micro
+        KeyName: !Ref KeyName
+        InstanceMarketOptions: 
+          MarketType: "spot"
+        IamInstanceProfile:
+          Arn: !GetAtt
+            - Ec2IamInstanceProfile
+            - Arn
+        SecurityGroupIds: 
+          - !Ref Ec2SlaveSecurityGroup
+      TagSpecifications:
+        - ResourceType: "launch-template"
+          Tags:
+            - Key: compliance:framework
+              Value: !Ref ComplianceTagValue
+            - Key: cost-allocation:department
+              Value: DEVOPS
+            - Key: cost-allocation:application
+              Value: common      
+
+  # Autoscaling group for jenkins slaves ( spot )
+  SlaveSpotAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      AutoScalingGroupName: asg-safran-internal-shared-cicd-slave-spot
+      MinSize: '0'
+      MaxSize: '5'
+      DesiredCapacity: '0'
+      LaunchTemplate:
+        LaunchTemplateId: !Ref EC2JenkinsSlaveSpotLaunchTemplate
+        Version: !GetAtt 
+          - EC2JenkinsSlaveSpotLaunchTemplate
+          - LatestVersionNumber
+      VPCZoneIdentifier: !Ref PrivateSubnetIds
+      Tags:
+        - Key: Name
+          Value: 'ec2-shared-cicd-slave-spot'
+          PropagateAtLaunch: true
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+          PropagateAtLaunch: true 
+        - Key: cost-allocation:department
+          Value: DEVOPS
+          PropagateAtLaunch: true
+        - Key: cost-allocation:application
+          Value: common
+          PropagateAtLaunch: true
+
+  #Launch template for jenkins slaves ( on demand )     
+  EC2JenkinsSlaveOnDemandLaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: ltp-shared-cicd-slave-ondemand
+      LaunchTemplateData:
+        ImageId: !Ref EC2AMIJenkinsSlave
+        InstanceType: t2.micro
+        KeyName: !Ref KeyName
+        IamInstanceProfile:
+          Arn: !GetAtt
+            - Ec2IamInstanceProfile
+            - Arn
+        SecurityGroupIds: 
+          - !Ref Ec2SlaveSecurityGroup
+      TagSpecifications:
+        - ResourceType: "launch-template"
+          Tags:
+            - Key: compliance:framework
+              Value: !Ref ComplianceTagValue
+            - Key: cost-allocation:department
+              Value: DEVOPS
+            - Key: cost-allocation:application
+              Value: common    
+
+  #Autoscaling group for jenkins slaves ( on demand ) 
+  SlaveOnDemandAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      AutoScalingGroupName: asg-shared-cicd-slave-ondemand
+      MinSize: '0'
+      MaxSize: '5'
+      DesiredCapacity: '0'
+      LaunchTemplate:
+        LaunchTemplateId: !Ref EC2JenkinsSlaveOnDemandLaunchTemplate
+        Version: !GetAtt 
+          - EC2JenkinsSlaveOnDemandLaunchTemplate
+          - LatestVersionNumber
+      VPCZoneIdentifier: !Ref PrivateSubnetIds
+      Tags:
+        - Key: Name
+          Value: 'ec2-shared-cicd-slave-ondemand'
+          PropagateAtLaunch: true
+        - Key: compliance:framework
+          Value: !Ref ComplianceTagValue
+          PropagateAtLaunch: true 
+        - Key: cost-allocation:department
+          Value: DEVOPS
+          PropagateAtLaunch: true
+        - Key: cost-allocation:application
+          Value: common
+          PropagateAtLaunch: true
+      
+  
