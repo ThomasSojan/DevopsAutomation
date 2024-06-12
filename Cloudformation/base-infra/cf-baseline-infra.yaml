@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: This template creates a default VPC, Internet-gateway, NAT instance, elastic ip, public subnets, private subnets, route tables, security group, customer managed key for encryption etc.  
+Description: This template creates a default VPC, Internet-gateway, NAT instance, elastic ip, public subnets, private subnets, route tables, security group.  
 Parameters:
   VPCName:
     Type: String
@@ -564,6 +564,11 @@ Resources:
             Description: "QBurst Banglore IP 4"
           - Cidr: "10.212.134.10/32"
             Description: "QBurst Banglore IP 5"
+          - Cidr: "35.154.142.219/32"
+            Description: "code.qburst.com"
+          - Cidr: "104.192.136.0/21"
+            Description: "bitbucket.org"
+          
         Tags:
         - Key: "Name"
           Value: !Ref QburstPrefixListName
