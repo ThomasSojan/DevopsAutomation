@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: This template creates a Jenkins master-slave instances and its associated resources.  
+Description: This template creates a Jenkins master instance.  
 Parameters:
   InstanceName:
     Type: String
@@ -59,11 +59,13 @@ Parameters:
   InstanceType:
     Description: EC2 instance type
     Type: String
-    Default: t2.micro
+    Default: t3a.medium
     AllowedValues:
       - t2.micro
       - t2.small
       - t2.medium
+      - t3.medium
+      - t3a.medium
 
   IAMRoleName:
     Type: String
@@ -309,7 +311,7 @@ Resources:
       LaunchTemplateName: ltp-shared-cicd-slave-spot
       LaunchTemplateData:
         ImageId: !Ref EC2AMIJenkinsSlave
-        InstanceType: t2.micro
+        InstanceType: t3.medium
         KeyName: !Ref KeyName
         InstanceMarketOptions: 
           MarketType: "spot"
@@ -364,7 +366,7 @@ Resources:
       LaunchTemplateName: ltp-shared-cicd-slave-ondemand
       LaunchTemplateData:
         ImageId: !Ref EC2AMIJenkinsSlave
-        InstanceType: t2.micro
+        InstanceType: t3.medium
         KeyName: !Ref KeyName
         IamInstanceProfile:
           Arn: !GetAtt
