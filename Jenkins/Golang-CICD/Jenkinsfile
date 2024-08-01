@@ -1,0 +1,41 @@
+pipeline {
+    agent {label 'spot-agents'}
+            
+
+            stages {
+                stage('Lint and test') {
+            
+                    steps {
+                        sh 'docker buildx build --file Dockerfile.lint-test -o testResults .'
+                    }
+                    post {
+                        always {
+                            recordCoverage qualityGates: [[criticality: 'FAILURE', metric: 'LINE', threshold: 15.0]], tools: [[parser: 'COBERTURA', pattern: 'testResults/coverage.xml']]
+                            junit testResults: 'testResults/report.xml', allowEmptyResults: true
+                        }
+                    }
+             }
+                stage('Build') {
+                    steps {
+                        script {
+                            docker.build("con-manager")
+                        }
+                    }
+                }
+                
+                stage('Copy Artifact') {
+                    steps {
+                             script {
+                                    
+                                    sh 'docker run --name con-manager-container con-manager'
+                                    sh 'docker cp con-manager-container:/workspace/con-manager .'
+                                    sh 'aws s3 cp con-manager s3://connection-manager-build-artifacts/'
+                               }
+                        
+                        
+
+                    }
+                }
+            }
+}
+
