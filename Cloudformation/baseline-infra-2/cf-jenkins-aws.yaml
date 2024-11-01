@@ -1,0 +1,499 @@
+# Jenkins infra setup using spot request without ASG
+AWSTemplateFormatVersion: 2010-09-09
+Description: The template creates EC2 for jenkins master and slaves & ALB.
+Parameters:
+  KeyPair:
+    Type: String
+    Description: Name of the Key Pair for the Ec2 instance
+  EC2AMIJenkinsMaster:
+    Description: Custom AMI ID for jenkins Master.
+    Type: 'AWS::EC2::Image::Id'
+  InstanceTypeJenkinsMaster:
+    Description: Instance type for Jenkins Master the EC2 instance
+    Type: String
+    Default: 't2.medium'
+  InstanceTypeJenkinsSlave:
+    Description: Instance type for Jenkins Master the EC2 instance
+    Type: String
+    Default: 't2.medium'
+Metadata: 
+  AWS::CloudFormation::Interface: 
+    ParameterGroups:  
+     -  Label: 
+          default: "Jenkins master Configuration"
+        Parameters: 
+          - EC2AMIJenkinsMaster
+          - KeyPair
+          - InstanceTypeJenkinsMaster
+          - InstanceTypeJenkinsSlave
+
+Resources:
+# Prefix List
+  PrefixList:
+    Type: "AWS::EC2::PrefixList"
+    Properties:
+      AddressFamily: IPv4
+      Entries:
+        - Cidr: 111.93.116.30/32
+        - Cidr: 117.239.250.9/32
+        - Cidr: 14.98.205.138/32
+        - Cidr: 115.248.7.141/32
+        - Cidr: 61.12.76.170/32
+        - Cidr: 122.15.225.249/32
+        - Cidr: 103.121.27.170/32
+        - Cidr: 14.141.33.202/32
+        - Cidr: 112.133.206.230/32
+        - Cidr: 103.142.30.60/32
+        - Cidr: 111.93.108.202/32
+        - Cidr: 118.185.82.83/32
+        - Cidr: 103.156.209.138/32
+        - Cidr: 49.249.37.182/32 #WTC Kochi
+        - Cidr: 103.135.95.70/32 #WTC Kochi
+        - Cidr: 14.140.179.22/32 #Koratty
+        - Cidr: 117.239.251.58/32 #Koratty
+        - Cidr: 49.249.171.10/32 #Koratty
+        - Cidr: 35.154.142.219/32 #code.qburst.com
+      MaxEntries: 20
+      PrefixListName: "Custom-QB-Prefix-List"
+
+# IAM Policy for Jenkins master to update the instance tags
+  Ec2TaggingCapabilityPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: safran-ec2-tagging-capabilities-policy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: 
+              - ec2:DeleteTags
+              - ec2:CreateTags
+            Resource: !Sub "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
+
+# IAM Policy for Jenkins master to manage the EC2 instances (slaves) via SpotFleet
+  Ec2FleetPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: safran-ec2-fleet-policy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: 
+              - ec2:DescribeSpotFleetInstances
+              - ec2:ModifySpotFleetRequest
+              - ec2:CreateTags
+              - ec2:DescribeRegions
+              - ec2:DescribeInstances
+              - ec2:TerminateInstances
+              - ec2:DescribeInstanceStatus
+              - ec2:DescribeSpotFleetRequests
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:UpdateAutoScalingGroup
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - iam:ListInstanceProfiles
+              - iam:ListRoles
+              - iam:PassRole
+            Resource: "*"
+
+# IAM role for Spot Fleet to create request
+  SpotInstanceIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: safran-aws-ec2-spot-fleet-tagging-role
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: spotfleet.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2SpotFleetTaggingRole
+      Tags:
+        - Key: qa-qb-jenkins-key
+          Value: 'internal'
+
+# IAM role for EC2 master Instane
+  EC2IamRoleJenkins:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: safran-jenkins-ec2-setup-role
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+        - !Ref Ec2TaggingCapabilityPolicy
+        - !Ref Ec2FleetPolicy
+      Tags:
+        - Key: qa-qb-jenkins-key
+          Value: 'internal'
+
+# EC2 master Instance profile 
+  EC2IamInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn: EC2IamRoleJenkins
+    Properties:
+      InstanceProfileName: safran-jenkins-ec2-setup-profile
+      Path: "/"
+      Roles:
+      - !Ref EC2IamRoleJenkins  
+
+# VPC Setup
+  # VPC
+  QAVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.40.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: 'safran-qa-master-vpc'
+  # IGW
+  QAInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: safran-qa-igw
+
+  # IGW - VPC Attachment
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref QAVPC
+      InternetGatewayId: !Ref QAInternetGateway
+
+  # Public Subnet 1
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref QAVPC
+      CidrBlock: 10.40.10.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs 
+          Ref: 'AWS::Region'
+      Tags:
+        - Key: Name
+          Value: safran-qa-public-subnet-1
+
+  # Public Subnet 2
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref QAVPC
+      CidrBlock: 10.40.20.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs 
+          Ref: 'AWS::Region'
+      Tags:
+        - Key: Name
+          Value: safran-qa-public-subnet-2
+
+  # Public Route Table 1
+  PublicRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref QAVPC
+      Tags:
+        - Key: Name
+          Value: safran-qa-public-route-table-1
+
+  # Public Route Table 2
+  PublicRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref QAVPC
+      Tags:
+        - Key: Name
+          Value: safran-qa-public-route-table-2
+
+  # Internet connectivity via IGW
+  InternetRouteRT1:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref QAInternetGateway
+
+  # Internet connectivity via IGW
+  InternetRouteRT2:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref QAInternetGateway
+
+  # Subner 1 - RT 1 association
+  AssociateSubnet1WithRouteTable1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable1
+
+  # Subner 2 - RT 2 association
+  AssociateSubnet2WithRouteTable2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable2
+
+# Jenkins master EC2 Instance and Security Group
+  # Jenkins Master SG configuration. 
+  JenkinsMasterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: 'safran-qa-jenkins-master-sg'
+      GroupDescription: ec2 jenkins master Allowed Ports
+      VpcId: !Ref QAVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourcePrefixListId: !Ref PrefixList
+          Description: SSH Port to IP prefix list
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourcePrefixListId: !Ref PrefixList
+          Description: Jenkins HTTP port to IP Prefix list
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: 'safran-qa-jenkins-master-sg'
+        - Key: qa-qb-jenkins-key
+          Value: 'internal'
+
+  # Jenkins master instance
+  JenkinsMasterEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceTypeJenkinsMaster
+      SecurityGroupIds:
+        - !Ref JenkinsMasterSecurityGroup
+      KeyName: !Ref KeyPair
+      ImageId: !Ref EC2AMIJenkinsMaster
+      SubnetId: !Ref PublicSubnet1
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp2
+            DeleteOnTermination: false
+      IamInstanceProfile: !Ref EC2IamInstanceProfile
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            # Install awscli
+            sudo apt-get update
+            sudo apt-get install jq -y
+            sudo apt-get install -y awscli 
+
+            # Install docker
+            sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+            sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+            add-apt-repository \
+              "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+              $(lsb_release -cs) \
+              stable"
+            sudo apt-get update
+            sudo apt-get install -y docker-ce
+            sudo usermod -aG docker ubuntu
+
+            # Install docker-compose
+            sudo curl -L https://github.com/docker/compose/releases/download/1.21.0/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+
+            #Install JRE
+            sudo apt install -y default-jre
+
+            # Install Jenkins
+            curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | sudo tee /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+            echo deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/ | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+            sudo apt-get update
+            sudo apt-get install jenkins -y 
+
+            # Name the ec2 instance
+            instance_id=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+            aws ec2 create-tags --resources $instance_id --tags 'Key="Name",Value=Safran-Jenkins-Master' --region ap-south-1
+      Tags:
+        - Key: Name
+          Value: 'safran-qa-jenkins-master-instance'
+
+  # Elastic IP for Jenkins Master
+  JenkinsMasterEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Tags:
+        - Key: Name
+          Value: safran-qa-jenkins-master-eip
+  # EIP - Instance association, Jenkins master
+  EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref JenkinsMasterEC2Instance
+      EIP: !Ref JenkinsMasterEIP
+
+# Jenkins slave Spot fleet and Security Group
+  # Jenkins slave SG configuration. 
+  JenkinsSlaveSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: 'safran-qa-jenkins-slave-sg'
+      GroupDescription: EC2 jenkins slave Allowed Ports
+      VpcId: !Ref QAVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourcePrefixListId: !Ref PrefixList
+          Description: SSH Port to IP prefix list
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !GetAtt JenkinsMasterSecurityGroup.GroupId
+          Description: SSH Port to IP prefix list
+        - IpProtocol: tcp
+          FromPort: 50000
+          ToPort: 50000
+          SourceSecurityGroupId: !GetAtt JenkinsMasterSecurityGroup.GroupId
+          Description: Jenkins agent port to Master
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: 'safran-qa-jenkins-master-sg'
+        - Key: qa-qb-jenkins-key
+          Value: 'internal'
+
+  # Launch template for Jenkins slave
+  EC2LaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: safran-qa-jenkins-slave
+      LaunchTemplateData:
+        ImageId: !Ref EC2AMIJenkinsMaster
+        InstanceType: !Ref InstanceTypeJenkinsSlave
+        KeyName: !Ref KeyPair
+        BlockDeviceMappings: 
+          - Ebs:
+              VolumeSize: 22
+              VolumeType: gp2
+              DeleteOnTermination: true
+              Encrypted: true
+            DeviceName: /dev/xvdcz
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            SubnetId: !Ref PublicSubnet1
+            AssociatePublicIpAddress: true
+            DeleteOnTermination: true
+            Groups:
+              - !Ref JenkinsSlaveSecurityGroup
+        UserData:
+          Fn::Base64:
+            !Sub |
+              #!/bin/bash
+
+              # Install awscli
+              sudo apt-get update
+              sudo apt-get install jq -y
+              sudo apt-get install -y awscli 
+
+              # Install docker
+              sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+              sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+              add-apt-repository \
+                "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+                $(lsb_release -cs) \
+                stable"
+              sudo apt-get update
+              sudo apt-get install -y docker-ce
+              sudo usermod -aG docker ubuntu
+
+              # Install docker-compose
+              sudo curl -L https://github.com/docker/compose/releases/download/1.21.0/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+
+              #Install JRE
+              sudo apt install -y default-jre
+      TagSpecifications:
+        - ResourceType: "launch-template"
+          Tags:
+            - Key: Name
+              Value: 'safran-qa-jenkins-slave'
+
+  SpotInstanceRequest:
+    Type: "AWS::EC2::SpotFleet"
+    Properties:
+      SpotFleetRequestConfigData:
+        IamFleetRole: !GetAtt SpotInstanceIamRole.Arn
+        TargetCapacity: 0
+        LaunchTemplateConfigs:
+          - LaunchTemplateSpecification:
+              LaunchTemplateId: !Ref EC2LaunchTemplate
+              Version: $Latest
+
+
+# If selenium instance is required uncomment the following
+
+  # SeleniumEC2Instance:
+  #   Type: "AWS::EC2::Instance"
+  #   Properties:
+  #     InstanceType: !Ref InstanceType
+  #     ImageId: !Ref EC2AMIJenkinsMaster
+  #     KeyName: !Ref KeyPair
+  #     IamInstanceProfile: !Ref EC2IamInstanceProfile
+  #     SecurityGroupIds  :
+  #       - !Ref Ec2SecurityGroup
+  #     UserData:
+  #         Fn::Base64:
+  #           !Sub |
+  #             #!/bin/bash
+  #             # Install awscli
+  #             sudo apt-get update
+  #             sudo apt-get install jq -y
+  #             sudo apt-get install -y awscli 
+
+  #             # Install docker
+  #             sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+  #             sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+  #             add-apt-repository \
+  #               "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+  #               $(lsb_release -cs) \
+  #               stable"
+  #             sudo apt-get update
+  #             sudo apt-get install -y docker-ce
+  #             sudo usermod -aG docker ubuntu
+
+  #             # Install docker-compose
+  #             sudo curl -L https://github.com/docker/compose/releases/download/1.21.0/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
+  #             sudo chmod +x /usr/local/bin/docker-compose
+
+  #             #Install JRE
+  #             sudo apt install -y default-jre
+
+  #             # Name the ec2 instance
+  #             instance_id=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+  #             aws ec2 create-tags --resources $instance_id --tags 'Key="Name",Value=Selenium-main' --region ap-south-1
